@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Disappearing Ink</title>
+<meta name="description" content="A journal that forgets. Write or draw — everything fades 15 seconds later.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f3eee3;
+    --rule: rgba(60, 80, 120, 0.09);
+    --margin: rgba(170, 60, 60, 0.18);
+    --ink: #1d2742;
+    --faint: rgba(29, 39, 66, 0.38);
+    --line: 38px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #16171b;
+      --rule: rgba(180, 190, 220, 0.06);
+      --margin: rgba(200, 90, 90, 0.16);
+      --ink: #d9dce8;
+      --faint: rgba(217, 220, 232, 0.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--paper); color: var(--ink);
+    font-family: "Cormorant Garamond", Georgia, serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #page {
+    position: fixed; inset: 0;
+    overflow: hidden;
+    padding: calc(var(--line) * 2) 24px var(--line) 72px;
+    font-size: 24px; line-height: var(--line);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    background-image:
+      linear-gradient(to right, transparent 52px, var(--margin) 52px, var(--margin) 53px, transparent 53px),
+      repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--line) - 1px), var(--rule) calc(var(--line) - 1px), var(--rule) var(--line));
+    background-position: 0 0, 0 calc(var(--line) * 2 - 6px);
+    background-attachment: local;
+  }
+  @media (min-width: 720px) {
+    #page { padding-left: max(96px, calc(50vw - 340px)); padding-right: max(24px, calc(50vw - 380px)); }
+    #page { background-image:
+      linear-gradient(to right, transparent calc(max(96px, calc(50vw - 340px)) - 20px), var(--margin) calc(max(96px, calc(50vw - 340px)) - 20px), var(--margin) calc(max(96px, calc(50vw - 340px)) - 19px), transparent calc(max(96px, calc(50vw - 340px)) - 19px)),
+      repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--line) - 1px), var(--rule) calc(var(--line) - 1px), var(--rule) var(--line)); }
+  }
+  .ch { animation: vanish 4s ease-in 15s forwards; }
+  .ch.gone { visibility: hidden; }
+  @keyframes vanish {
+    0%   { opacity: 1; filter: blur(0); }
+    100% { opacity: 0; filter: blur(3px); }
+  }
+  #caret {
+    display: inline-block; width: 1.5px; height: 1.05em;
+    background: var(--ink); vertical-align: -0.18em; margin-left: 1px;
+    opacity: 0;
+  }
+  body.focused #caret { animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 0%, 50% { opacity: 0.8; } 50.01%, 100% { opacity: 0; } }
+
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  #title {
+    position: fixed; top: 18px; left: 0; right: 0; text-align: center;
+    font-style: italic; font-size: 17px; letter-spacing: 0.08em;
+    color: var(--faint); pointer-events: none; user-select: none;
+  }
+  #hint {
+    position: fixed; bottom: calc(18px + env(safe-area-inset-bottom)); left: 16px; right: 16px; text-align: center;
+    font-size: 16px; color: var(--faint); pointer-events: none; user-select: none;
+    transition: opacity 2s ease;
+  }
+  body.started #hint { opacity: 0; }
+  #input {
+    position: fixed; left: 0; bottom: 0; width: 1px; height: 1px;
+    opacity: 0; border: 0; padding: 0; resize: none;
+    font-size: 16px; /* stops iOS zooming on focus */
+  }
+</style>
+</head>
+<body>
+  <div id="page"><span id="caret"></span></div>
+  <canvas id="canvas"></canvas>
+  <div id="title">disappearing ink</div>
+  <div id="hint">type to write · drag to draw · everything fades after 15 seconds</div>
+  <textarea id="input" autocapitalize="sentences" autocomplete="off" spellcheck="false" aria-label="Write"></textarea>
+
+<script>
+(() => {
+  const LIFE = 15000, FADE = 4000;
+  const page = document.getElementById('page');
+  const caret = document.getElementById('caret');
+  const input = document.getElementById('input');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+
+  const start = () => document.body.classList.add('started');
+
+  // ---------- writing ----------
+  let prev = '';
+  let composing = false;
+  const live = []; // spans still visible, in typed order
+
+  function addChar(c) {
+    const s = document.createElement('span');
+    s.className = 'ch';
+    s.textContent = c;
+    s.addEventListener('animationend', () => {
+      s.classList.add('gone');
+      const i = live.indexOf(s);
+      if (i > -1) live.splice(i, 1);
+      maybeClear();
+    });
+    page.insertBefore(s, caret);
+    live.push(s);
+  }
+
+  function removeChar() {
+    const s = live.pop();
+    if (s) s.remove();
+  }
+
+  // Once every word has vanished, wipe the page so the next words start at the top.
+  function maybeClear() {
+    if (live.length || composing) return;
+    page.querySelectorAll('.ch').forEach(el => el.remove());
+    page.scrollTop = 0;
+    input.value = prev = '';
+  }
+
+  function sync() {
+    const v = input.value;
+    let p = 0;
+    while (p < prev.length && p < v.length && prev[p] === v[p]) p++;
+    for (let i = 0; i < prev.length - p; i++) removeChar();
+    for (const c of v.slice(p)) addChar(c);
+    prev = v;
+    if (v) start();
+    caret.scrollIntoView({ block: 'nearest' });
+  }
+
+  input.addEventListener('input', sync);
+  input.addEventListener('compositionstart', () => composing = true);
+  input.addEventListener('compositionend', () => { composing = false; sync(); });
+  input.addEventListener('keydown', e => {
+    // ink only flows forward: no moving the cursor back into the past
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) e.preventDefault();
+  });
+  input.addEventListener('focus', () => document.body.classList.add('focused'));
+  input.addEventListener('blur', () => document.body.classList.remove('focused'));
+  const keepEnd = () => { const n = input.value.length; input.setSelectionRange(n, n); };
+  input.addEventListener('select', keepEnd);
+  document.addEventListener('keydown', e => {
+    if (document.activeElement !== input && !e.metaKey && !e.ctrlKey) input.focus();
+  });
+
+  // ---------- drawing ----------
+  let dpr = 1;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = innerWidth * dpr;
+    canvas.height = innerHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    wake();
+  }
+  addEventListener('resize', resize);
+
+  const strokes = [];
+  let current = null, downAt = null, wasTap = false;
+
+  canvas.addEventListener('pointerdown', e => {
+    canvas.setPointerCapture(e.pointerId);
+    downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+    current = { pts: [], w: [] };
+    strokes.push(current);
+    addPoint(e);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!current) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of (evs.length ? evs : [e])) addPoint(ev);
+    if (current.pts.length > 2) start();
+  });
+  const end = e => {
+    if (!current) return;
+    const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+    wasTap = moved < 6 && performance.now() - downAt.t < 300;
+    if (wasTap) strokes.splice(strokes.indexOf(current), 1);
+    current = null;
+    wake();
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  // A tap (rather than a drag) opens the keyboard.
+  canvas.addEventListener('click', () => { if (wasTap) { input.focus(); keepEnd(); } });
+
+  function addPoint(e) {
+    const t = performance.now();
+    const pts = current.pts;
+    const x = e.clientX, y = e.clientY;
+    const last = pts[pts.length - 1];
+    if (last && Math.hypot(x - last.x, y - last.y) < 1) return;
+    let w;
+    if (e.pointerType === 'pen' && e.pressure > 0) w = 0.8 + e.pressure * 3.6;
+    else if (last) {
+      const v = Math.hypot(x - last.x, y - last.y) / Math.max(1, t - last.t);
+      w = Math.max(1.2, Math.min(3.4, 3.6 - v * 0.9));
+      w = last.w * 0.7 + w * 0.3;
+    } else w = 2.6;
+    pts.push({ x, y, t, w });
+    wake();
+  }
+
+  const inkColor = () => getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
+  let ink = inkColor();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { ink = inkColor(); wake(); });
+
+  const alphaAt = (t, now) => {
+    const age = now - t;
+    if (age < LIFE) return 1;
+    return Math.max(0, 1 - (age - LIFE) / FADE);
+  };
+
+  let running = false;
+  function wake() { if (!running) { running = true; requestAnimationFrame(frame); } }
+
+  function frame() {
+    const now = performance.now();
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.strokeStyle = ink;
+    ctx.fillStyle = ink;
+
+    for (let s = strokes.length - 1; s >= 0; s--) {
+      const pts = strokes[s].pts;
+      if (strokes[s] !== current && alphaAt(pts[pts.length - 1].t, now) <= 0) { strokes.splice(s, 1); continue; }
+      if (pts.length === 1) {
+        const a = alphaAt(pts[0].t, now);
+        if (a > 0) { ctx.globalAlpha = a; ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, pts[0].w / 2, 0, 7); ctx.fill(); }
+        continue;
+      }
+      // Each bit of ink fades on its own clock, so a line vanishes in the order it was drawn.
+      for (let i = 1; i < pts.length; i++) {
+        const a = alphaAt(pts[i].t, now);
+        if (a <= 0) continue;
+        const p0 = pts[i - 1], p1 = pts[i];
+        ctx.globalAlpha = a;
+        ctx.lineWidth = p1.w;
+        ctx.beginPath();
+        if (i > 1) {
+          const pm = pts[i - 2];
+          ctx.moveTo((pm.x + p0.x) / 2, (pm.y + p0.y) / 2);
+          ctx.quadraticCurveTo(p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+        } else {
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+        }
+        if (i === pts.length - 1) ctx.lineTo(p1.x, p1.y);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    if (strokes.length) requestAnimationFrame(frame);
+    else running = false;
+  }
+
+  resize();
+  if (!matchMedia('(pointer: coarse)').matches) input.focus();
+})();
+</script>
+</body>
+</html>
